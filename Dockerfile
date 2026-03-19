@@ -6,10 +6,11 @@ RUN apt-get update && apt-get install -y \
     git \
     curl \
     libzip-dev \
-    zip
+    zip \
+    libicu-dev
 
 # Install PHP extensions
-RUN docker-php-ext-install pdo pdo_mysql zip
+RUN docker-php-ext-install pdo pdo_mysql zip intl
 
 # Install Composer
 COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
