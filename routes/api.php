@@ -8,14 +8,7 @@ use App\Http\Controllers\Api\WithdrawalController;
 use App\Http\Controllers\Api\FantasyTeamController;
 use App\Services\CricketApiService;
 
-/*
-|--------------------------------------------------------------------------
-| API Routes
-|--------------------------------------------------------------------------
-| Prefix: /api/v1
-| This file contains all public and authenticated APIs for the fantasy app
-|--------------------------------------------------------------------------
-*/
+
 
 Route::prefix('v1')->group(function () {
 
@@ -25,15 +18,17 @@ Route::prefix('v1')->group(function () {
     |--------------------------------------------------------------------------
     */
 
-      // Create fantasy team
-        Route::post('/create-team',[FantasyTeamController::class,'createTeam']);
+    Route::get('/match/{id}/debug', [MatchController::class, 'debugScorecard']);
 
-        // Get user's teams for a specific match
-        Route::get('/my-teams/{match_id}', [FantasyTeamController::class,'myTeams']);
 
-        // Team preview (players + captain/vice captain)
-        Route::get('/team/{team_id}', [FantasyTeamController::class,'teamPreview']);
+    Route::get('/test-points/{match_id}', [ContestController::class, 'testPoints']);
 
+    Route::get('contest/{id}/leaderboard', [ContestController::class, 'leaderboard']);
+
+    Route::get('contest/{id}/calculate-points/{match_id}', [ContestController::class, 'calculateContestPoints']);
+
+      
+    Route::get('/match/{id}/players-list', [MatchController::class, 'playersList']);
     // Home screen APIs
     Route::get('/home/matches', [MatchController::class,'homeMatches']);
     Route::get('/home/upcoming-matches', [MatchController::class,'upcomingMatches']);
@@ -96,6 +91,14 @@ Route::get('/match/{id}/live', [MatchController::class, 'live']); // manual
         |--------------------------------------------------------------------------
         */
 
+         // Create fantasy team
+        Route::post('/create-team',[FantasyTeamController::class,'createTeam']);
+
+        // Get user's teams for a specific match
+        Route::get('/my-teams/{match_id}', [FantasyTeamController::class,'myTeams']);
+
+        // Team preview (players + captain/vice captain)
+        Route::get('/team/{team_id}', [FantasyTeamController::class,'teamPreview']);
       
 
 
@@ -109,10 +112,10 @@ Route::get('/match/{id}/live', [MatchController::class, 'live']); // manual
         Route::post('/contest/join', [ContestController::class, 'join']);
 
         // Create private contest
-        Route::post('/contest/private/create', [ContestController::class, 'createPrivateContest']);
+        Route::post('/create-private-contest', [ContestController::class, 'createPrivateContest']);
 
         // Join private contest using code
-        Route::post('/contest/private/join', [ContestController::class, 'joinPrivateByCode']);
+        Route::post('/join-private-contest', [ContestController::class, 'joinPrivateContest']);
 
 
         /*
@@ -136,6 +139,7 @@ Route::get('/match/{id}/live', [MatchController::class, 'live']); // manual
 | Used to test CricAPI integration
 |--------------------------------------------------------------------------
 */
+
 
 Route::get('/test-cricapi', function (CricketApiService $service) {
     return $service->getCurrentMatches();

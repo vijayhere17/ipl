@@ -22,4 +22,9 @@ class User extends Authenticatable
  'referral_reward_given',
  'bonus_balance'
 ];
+
+public function wallet()
+{
+    return $this->hasOne(\App\Models\Wallet::class, 'user_id');
+}
 }

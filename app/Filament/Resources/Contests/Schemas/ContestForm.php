@@ -24,16 +24,20 @@ class ContestForm
                     ->label('Contest Badge')
                     ->placeholder('Example: Free Bike'),
 
-                Select::make('cricket_match_id')
-                    ->label('Match')
-                    ->options(
-                        CricketMatch::all()
-                            ->mapWithKeys(fn ($match) => [
-                                $match->id => $match->team_1 . ' vs ' . $match->team_2
-                            ])
-                    )
-                    ->searchable()
-                    ->required(),
+               Select::make('cricket_match_id')
+    ->label('Match')
+    ->options(
+        CricketMatch::where('status', 'upcoming')
+            ->orderBy('match_start_time', 'asc')
+            ->get()
+            ->mapWithKeys(fn ($match) => [
+                $match->id =>
+                    $match->team_1 . ' vs ' . $match->team_2 .
+                    ' (' . $match->match_start_time->format('d M h:i A') . ')'
+            ])
+    )
+    ->searchable()
+    ->required(),
 
                 Select::make('contest_type')
                     ->options([

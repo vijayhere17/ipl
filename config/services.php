@@ -6,12 +6,6 @@ return [
     |--------------------------------------------------------------------------
     | Third Party Services
     |--------------------------------------------------------------------------
-    |
-    | This file is for storing the credentials for third party services such
-    | as Mailgun, Postmark, AWS and more. This file provides the de facto
-    | location for this type of information, allowing packages to have
-    | a conventional file to locate the various service credentials.
-    |
     */
 
     'postmark' => [
@@ -22,10 +16,17 @@ return [
         'key' => env('RESEND_API_KEY'),
     ],
 
+    // ❌ OLD (keep for safety, but not used now)
     'cricapi' => [
-    'key' => env('CRIC_API_KEY'),
-    'base_url' => env('CRIC_API_BASE_URL'),
-],
+        'key' => env('CRIC_API_KEY'),
+        'base_url' => env('CRIC_API_BASE_URL'),
+    ],
+
+    // ✅ NEW (MAIN API NOW)
+    'sportmonks' => [
+        'key' => env('SPORTMONKS_API_KEY'),
+        'base_url' => env('SPORTMONKS_BASE_URL'),
+    ],
 
     'ses' => [
         'key' => env('AWS_ACCESS_KEY_ID'),

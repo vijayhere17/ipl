@@ -12,8 +12,8 @@ class CricketApiService
 
     public function __construct()
     {
-        $this->baseUrl = config('services.cricapi.base_url');
-        $this->apiKey  = config('services.cricapi.key');
+        $this->baseUrl = config('services.sportmonks.base_url');
+        $this->apiKey  = config('services.sportmonks.key');
     }
 
     protected function client()
@@ -24,70 +24,80 @@ class CricketApiService
     }
 
     /**
-     * Get current matches (cached 2 minutes)
+     * ✅ Fixtures (matches list)
      */
-    public function getCurrentMatches(): array
+    public function getFixtures(): array
     {
-        return Cache::remember('cricapi_current_matches', 120, function () {
+        return Cache::remember('fixtures_list', 30, function () {
 
-            $response = $this->client()->get("{$this->baseUrl}/currentMatches", [
-                'apikey' => $this->apiKey,
-                'offset' => 0
+            $response = $this->client()->get("{$this->baseUrl}/fixtures", [
+                'api_token' => $this->apiKey,
+                'filter[starts_between]' => now()->subDay()->toDateString() . ',' . now()->addDays(5)->toDateString(),
+                'include' => 'localteam,visitorteam,runs,league'
             ]);
 
             return $response->json() ?? [];
-
         });
     }
 
     /**
-     * Match info (cached 10 minutes)
+     * ✅ Match Info (teams + score)
      */
-    public function getMatchInfo($matchId): array
-    {
-        return Cache::remember("cricapi_match_info_$matchId", 600, function () use ($matchId) {
-
-            $response = $this->client()->get("{$this->baseUrl}/match_info", [
-                'apikey' => $this->apiKey,
-                'id'     => $matchId
-            ]);
-
-            return $response->json() ?? [];
-
-        });
-    }
-
-    /**
-     * Live scorecard (cached 20 seconds)
-     */
-    public function getScoreCard($matchId): array
+public function getMatchInfo($matchId): array
 {
-    return Cache::remember("cricapi_score_$matchId", 20, function () use ($matchId) {
+    return Cache::remember("match_info_$matchId", 60, function () use ($matchId) {
 
-        $response = $this->client()->get("{$this->baseUrl}/match_scorecard", [
-            'apikey' => $this->apiKey,
-            'id'     => $matchId
-        ])->json();
+        $response = $this->client()->get("{$this->baseUrl}/fixtures/$matchId", [
+            'api_token' => $this->apiKey,
 
-        // 🔥 IMPORTANT FIX
-        if (empty($response) || empty($response['data'])) {
-            return []; // ❌ DO NOT CACHE EMPTY RESPONSE
-        }
+            // ✅ ONLY ALLOWED INCLUDES
+            'include' => 'league,venue,localteam,visitorteam,runs,lineup'
+        ]);
 
-        return $response;
+        return $response->json() ?? [];
     });
 }
 
-    /**
-     * Match squad (cached 1 hour)
-     */
-  public function getMatchSquad($matchId): array
+public function getScorecardData($matchId): array
 {
-    return Cache::remember("cricapi_match_squad_$matchId", 3600, function () use ($matchId) {
+    return Cache::remember("scorecard_$matchId", 10, function () use ($matchId) {
 
-        $response = $this->client()->get("{$this->baseUrl}/match_squad", [
-            'apikey' => $this->apiKey,
-            'id' => $matchId
+        $response = $this->client()->get("{$this->baseUrl}/fixtures/$matchId", [
+            'api_token' => $this->apiKey,
+            'include'   => 'batting.batsman,bowling.bowler,runs'  // ✅ Fixed includes
+        ]);
+
+        return $response->json() ?? [];
+    });
+}
+
+public function getRawScorecard($matchId): array
+{
+    $response = $this->client()->get("{$this->baseUrl}/fixtures/$matchId", [
+        'api_token' => $this->apiKey,
+        'include'   => 'batting.batsman,bowling.bowler,runs'
+    ]);
+
+    return $response->json() ?? [];
+}
+    /**
+     * ✅ Scorecard (same as match info for Sportmonks)
+     */
+    public function getScoreCard($matchId): array
+    {
+        return $this->getMatchInfo($matchId);
+    }
+
+    /**
+     * ✅ Ball by Ball (REAL LIVE DATA)
+     */
+   public function getBallByBall($matchId): array
+{
+    return Cache::remember("balls_$matchId", 3, function () use ($matchId) {
+
+        $response = $this->client()->get("{$this->baseUrl}/fixtures/$matchId", [
+            'api_token' => $this->apiKey,
+            'include' => 'balls'
         ]);
 
         return $response->json() ?? [];
@@ -95,72 +105,63 @@ class CricketApiService
 }
 
     /**
-     * Upcoming matches (cached 10 minutes)
+     * ❌ Squad (not reliable in v2, so disabled)
      */
-    public function getUpcomingMatches(): array
-    {
-        return Cache::remember('cricapi_upcoming_matches', 600, function () {
+   public function getMatchSquad($matchId): array
+{
+    return Cache::remember("squad_$matchId", 60, function () use ($matchId) {
 
-            $response = $this->client()->get("{$this->baseUrl}/matches", [
-                'apikey' => $this->apiKey,
-                'offset' => 0
+        $response = $this->client()->get("{$this->baseUrl}/fixtures/$matchId", [
+            'api_token' => $this->apiKey,
+            'include' => 'lineup,localteam,visitorteam'
+        ]);
+
+        $data = $response->json();
+
+        // fallback if lineup missing
+        if (empty($data['data']['lineup'])) {
+            return [
+                'team1' => [],
+                'team2' => []
+            ];
+        }
+
+        return $data;
+    });
+}
+    /**
+     * ✅ Live Matches
+     */
+    public function getLiveScores(): array
+    {
+        return Cache::remember('live_scores', 5, function () {
+
+            $response = $this->client()->get("{$this->baseUrl}/livescores", [
+                'api_token' => $this->apiKey,
+                'include' => 'localteam,visitorteam,runs,lineup'
             ]);
 
             return $response->json() ?? [];
-
         });
     }
 
-    public function getBallByBall($matchId): array
-{
-    return Cache::remember("cricapi_bbb_$matchId", 10, function () use ($matchId) {
+    /**
+     * ✅ Auto detect active live match
+     */
+    public function getActiveMatchId(): ?int
+    {
+        $liveScores = $this->getLiveScores();
 
-        $response = $this->client()->get("{$this->baseUrl}/match_bbb", [
-            'apikey' => $this->apiKey,
-            'id' => $matchId
-        ])->json();
-
-        // 🔥 IMPORTANT FIX
-        if (empty($response) || empty($response['data'])) {
-            return [];
+        if (empty($liveScores['data'])) {
+            return null;
         }
 
-        return $response;
-    });
-}
+        foreach ($liveScores['data'] as $match) {
+            if (($match['live'] ?? false) == true) {
+                return $match['id'];
+            }
+        }
 
-public function getLiveScores(): array
-{
-    return Cache::remember('cricapi_live_scores', 10, function () {
-
-        $response = $this->client()->get("{$this->baseUrl}/cricScore", [
-            'apikey' => $this->apiKey
-        ])->json();
-
-        return $response ?? [];
-    });
-}
-
-public function getActiveMatchId(): ?string
-{
-    $liveScores = $this->getLiveScores();
-
-    if (empty($liveScores['data'])) {
         return null;
     }
-
-    foreach ($liveScores['data'] as $match) {
-
-        if (
-            ($match['matchStarted'] ?? false) === true &&
-            ($match['matchEnded'] ?? false) === false
-        ) {
-            return $match['id'];
-        }
-    }
-
-    return null;
-}
-
-
 }

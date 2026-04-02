@@ -17,7 +17,7 @@ class Kernel extends ConsoleKernel
    $schedule->command('app:sync-match-scores')->everyMinute();
 }
 
-    protected function commands()
+    protected function commands()   
     {
         $this->load(__DIR__.'/Commands');
     }

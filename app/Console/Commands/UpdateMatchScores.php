@@ -5,60 +5,114 @@ namespace App\Console\Commands;
 use Illuminate\Console\Command;
 use App\Models\CricketMatch;
 use App\Services\CricketApiService;
+use Carbon\Carbon;
 
 class UpdateMatchScores extends Command
 {
     protected $signature = 'update:match-scores';
 
-    protected $description = 'Update live match scores from CricAPI';
+    protected $description = 'Update live match scores from API';
 
-    public function handle()
+   public function handle()
 {
     $service = app(\App\Services\CricketApiService::class);
 
-    $matches = \App\Models\CricketMatch::whereIn('status',['live','completed'])->get();
+    $this->info('Auto updater started...');
 
-    foreach ($matches as $match) {
+    while (true) {
 
-        $info = $service->getMatchInfo($match->api_match_id);
+        try {
 
-        if(!isset($info['data']['score'])){
-            continue;
-        }
+            // ✅ USE LIVE SCORES (IMPORTANT 🔥)
+            $apiResponse = $service->getLiveScores();
 
-        $scores = $info['data']['score'];
-
-        $team1Runs = 0;
-        $team1Wickets = 0;
-        $team1Overs = 0;
-
-        $team2Runs = 0;
-        $team2Wickets = 0;
-        $team2Overs = 0;
-
-        foreach ($scores as $index => $s) {
-
-            if ($index % 2 == 0) {
-                $team1Runs += $s['r'] ?? 0;
-                $team1Wickets += $s['w'] ?? 0;
-                $team1Overs += $s['o'] ?? 0;
-            } else {
-                $team2Runs += $s['r'] ?? 0;
-                $team2Wickets += $s['w'] ?? 0;
-                $team2Overs += $s['o'] ?? 0;
+            if (!isset($apiResponse['data'])) {
+                $this->error('No API data');
+                sleep(10);
+                continue;
             }
+
+            foreach ($apiResponse['data'] as $match) {
+
+                // ✅ TIME
+                $matchTime = \Carbon\Carbon::parse($match['starting_at']);
+
+                // ✅ STATUS
+                $status = 'upcoming';
+
+                if (($match['status'] ?? '') == 'Finished') {
+                    $status = 'completed';
+                } elseif (($match['status'] ?? '') == 'Live') {
+                    $status = 'live';
+                }
+
+                // ✅ TEAM NAMES
+                $team1_name = $match['localteam']['name'] ?? '';
+                $team2_name = $match['visitorteam']['name'] ?? '';
+
+                // ✅ TEAM IDS (VERY IMPORTANT)
+                $localTeamId = $match['localteam_id'] ?? null;
+                $visitorTeamId = $match['visitorteam_id'] ?? null;
+
+                // ✅ RUNS (SAFE MAPPING 🔥)
+                $runs = $match['runs'] ?? [];
+
+                $team1_score = 0;
+                $team1_wicket = 0;
+                $team1_over = '0.0';
+
+                $team2_score = 0;
+                $team2_wicket = 0;
+                $team2_over = '0.0';
+
+                foreach ($runs as $run) {
+
+                    if (($run['team_id'] ?? null) == $localTeamId) {
+                        $team1_score = $run['score'] ?? 0;
+                        $team1_wicket = $run['wickets'] ?? 0;
+                        $team1_over = $run['overs'] ?? '0.0';
+                    }
+
+                    if (($run['team_id'] ?? null) == $visitorTeamId) {
+                        $team2_score = $run['score'] ?? 0;
+                        $team2_wicket = $run['wickets'] ?? 0;
+                        $team2_over = $run['overs'] ?? '0.0';
+                    }
+                }
+
+                // ✅ SAVE
+                \App\Models\CricketMatch::updateOrCreate(
+                    ['api_match_id' => $match['id']],
+                    [
+                        'series_name' => $match['league']['name'] ?? 'IPL',
+
+                        'team_1' => $team1_name,
+                        'team_2' => $team2_name,
+
+                        'match_start_time' => \Carbon\Carbon::parse($match['starting_at'])->utc(),
+
+                        'status' => $status,
+
+                        'team1_score' => $team1_score,
+                        'team1_wicket' => $team1_wicket,
+                        'team1_over' => $team1_over,
+
+                        'team2_score' => $team2_score,
+                        'team2_wicket' => $team2_wicket,
+                        'team2_over' => $team2_over,
+                    ]
+                );
+
+                $this->info("Updated match ID: {$match['id']}");
+            }
+
+        } catch (\Exception $e) {
+            $this->error($e->getMessage());
         }
 
-        $match->update([
-            'team1_score' => $team1Runs,
-            'team1_wicket' => $team1Wickets,
-            'team1_over' => $team1Overs,
-            'team2_score' => $team2Runs,
-            'team2_wicket' => $team2Wickets,
-            'team2_over' => $team2Overs
-        ]);
-    }
+        $this->info('Cycle done: ' . now());
 
-    $this->info('Scores updated successfully');
+        sleep(10); // every 10 sec
+    }
 }
 }
