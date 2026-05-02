@@ -19,6 +19,7 @@ class User extends Authenticatable
  'password',
  'referral_code',
  'referred_by',
+ 'wallet_address' ,
  'referral_reward_given',
  'bonus_balance'
 ];

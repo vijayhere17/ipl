@@ -14,9 +14,9 @@ class FantasyTeam extends Model
     ];
 
     public function players()
-    {
-        return $this->hasMany(FantasyTeamPlayer::class);
-    }
+{
+    return $this->hasMany(FantasyTeamPlayer::class, 'fantasy_team_id');
+}
 
     public function match()
     {

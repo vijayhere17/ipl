@@ -8,6 +8,7 @@ use App\Models\User;
 use App\Models\EmailOtp;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Mail;
+use App\Models\Wallet;
 
 class AuthController extends Controller
 {
@@ -176,6 +177,24 @@ public function updateProfile(Request $request)
             'wallet_address' => $user->wallet_address,
             'referral_code' => $user->referral_code
         ]
+    ]);
+}
+
+public function wallet()
+{
+    $user   = auth()->user();
+    $wallet = Wallet::where('user_id', $user->id)->first();
+
+    return response()->json([
+        'status' => true,
+        'data'   => [
+            'deposit_balance' => $wallet?->deposit_balance  ?? 0,
+            'winning_balance' => $wallet?->winning_balance  ?? 0,
+            'bonus_balance'   => $wallet?->bonus_balance    ?? 0,
+            'total_balance'   => ($wallet?->deposit_balance ?? 0)
+                               + ($wallet?->winning_balance ?? 0)
+                               + ($wallet?->bonus_balance   ?? 0),
+        ],
     ]);
 }
 }

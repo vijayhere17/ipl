@@ -8,6 +8,8 @@ use App\Services\CricketApiService;
 use Illuminate\Support\Facades\Cache;
 use App\Models\Player;
 use Carbon\Carbon;
+use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Http;
 
 class MatchController extends Controller
 {
@@ -137,46 +139,77 @@ foreach ($runs as $run) {
     ]);
 }
 
- public function homeMatches()
+public function homeMatches()
 {
-    $matches = CricketMatch::whereIn('status',['live','completed','upcoming'])
+    $matches = \App\Models\CricketMatch::whereIn('status', ['live', 'completed'])
 
-        // ✅ SHOW yesterday + today (IST SAFE)
+        // ✅ IPL ONLY
+        ->where('series_name', 'like', '%Indian Premier League%')
+
+        // ✅ Yesterday + Today (IST SAFE)
         ->whereBetween('match_start_time', [
             now('Asia/Kolkata')->subDay()->startOfDay()->utc(),
             now('Asia/Kolkata')->endOfDay()->utc()
         ])
 
-        // ✅ PRIORITY: live → upcoming → completed
         ->orderByRaw("FIELD(status,'live','upcoming','completed')")
-        ->orderBy('match_start_time','desc')
+        ->orderBy('match_start_time', 'desc')
         ->limit(10)
         ->get();
 
     $data = [];
 
-    foreach($matches as $match){
+    foreach ($matches as $match) {
 
-        // ✅ CONVERT TO IST
         $matchTimeIST = \Carbon\Carbon::parse($match->match_start_time)
             ->setTimezone('Asia/Kolkata');
 
-        // ✅ CLEAN RESULT TEXT
+        // =====================================
+        // 🔥 FINAL RESULT LOGIC (FIXED)
+        // =====================================
         $resultText = '';
 
-        if (!empty($match->result_note)) {
-            $resultText = str_replace(
-                [$match->team_1, $match->team_2],
-                [$match->team1_code, $match->team2_code],
-                $match->result_note
-            );
-        } elseif (!empty($match->winner)) {
-            $resultText = $match->winner . ' won';
+        if ($match->status === 'completed') {
+
+            // ✅ PRIORITY 1: USE API RESULT (BEST)
+            if (!empty($match->result_note)) {
+
+                $resultText = str_replace(
+                    [$match->team_1, $match->team_2],
+                    [$match->team1_code, $match->team2_code],
+                    $match->result_note
+                );
+
+            } else {
+
+                // ✅ FALLBACK (CORRECT LOGIC)
+                $team1Score = $match->team1_score ?? 0;
+                $team2Score = $match->team2_score ?? 0;
+
+                // 👉 CASE 1: TEAM 2 WON (CHASED TARGET)
+                if ($team2Score > $team1Score) {
+
+                    $wicketsLeft = 10 - ($match->team2_wicket ?? 0);
+                    $resultText = $match->team2_code . " won by {$wicketsLeft} wickets";
+
+                }
+                // 👉 CASE 2: TEAM 1 WON (DEFENDED)
+                elseif ($team1Score > $team2Score) {
+
+                    $runs = $team1Score - $team2Score;
+                    $resultText = $match->team1_code . " won by {$runs} runs";
+
+                }
+                // 👉 CASE 3: TIE
+                else {
+                    $resultText = "Match tied";
+                }
+            }
         }
 
         $data[] = [
 
-            'match_id' => $match->api_match_id,
+            'match_id' => $match->id,
             'match_name' => $match->series_name,
 
             'team1' => $match->team_1,
@@ -203,7 +236,7 @@ foreach ($runs as $run) {
             'match_time_ist' => $matchTimeIST->format('h:i A'),
             'match_date_ist' => $matchTimeIST->format('d M Y'),
 
-            // ✅ RESULT
+            // ✅ FINAL RESULT
             'result' => $resultText
         ];
     }
@@ -213,40 +246,35 @@ foreach ($runs as $run) {
         'data' => $data
     ]);
 }
-   public function upcomingMatches()
+
+
+ public function upcomingMatches()
 {
-    $matches = CricketMatch::where(
-        'match_start_time', '>', now()->utc()
-    )
-    ->orderBy('match_start_time','asc')
-    ->limit(10)
-    ->get();
+    $matches = CricketMatch::where('match_start_time', '>', now()->utc())
+        ->where('series_name', 'Indian Premier League')
+        ->orderBy('match_start_time', 'asc')
+        ->limit(10)
+        ->get();
 
     $data = [];
 
-    foreach($matches as $match){
+    foreach ($matches as $match) {
 
-        // ✅ IST TIME CONVERSION
         $matchTimeIST = \Carbon\Carbon::parse($match->match_start_time)
             ->setTimezone('Asia/Kolkata');
 
         $data[] = [
+            'match_id'   => $match->id,
 
-            // ✅ TEAM SHORT NAME
             'team1_code' => $match->team1_code ?? '',
             'team2_code' => $match->team2_code ?? '',
 
-            // ✅ TEAM LOGO (SAFE FALLBACK)
             'team1_logo' => $match->team1_logo ?: 'https://h.cricapi.com/img/icon512.png',
             'team2_logo' => $match->team2_logo ?: 'https://h.cricapi.com/img/icon512.png',
 
-            // ✅ MATCH TIME (IST)
             'match_time' => $matchTimeIST->format('h:i A'),
-
-            // ✅ MATCH DATE
             'match_date' => $matchTimeIST->format('d M'),
 
-            // ✅ STATUS
             'status' => 'upcoming'
         ];
     }
@@ -262,7 +290,22 @@ foreach ($runs as $run) {
 
 public function matchInfo($id, CricketApiService $service)
 {
-    $response = $service->getMatchInfo($id);
+    // =========================
+    // ✅ STEP 1: FIND MATCH (DB ID)
+    // =========================
+    $match = CricketMatch::find($id);
+
+    if (!$match) {
+        return response()->json([
+            'status' => false,
+            'message' => 'Match not found'
+        ]);
+    }
+
+    // =========================
+    // ✅ STEP 2: CALL API USING api_match_id
+    // =========================
+    $response = $service->getMatchInfo($match->api_match_id);
 
     if (!isset($response['data'])) {
         return response()->json([
@@ -302,7 +345,7 @@ public function matchInfo($id, CricketApiService $service)
             $teamId = $player['lineup']['team_id'] ?? null;
             $name = $player['fullname'] ?? '';
 
-            // 👉 Add (c) for captain
+            // Captain tag
             if (($player['lineup']['captain'] ?? false) === true) {
                 $name .= ' (c)';
             }
@@ -372,7 +415,7 @@ public function matchInfo($id, CricketApiService $service)
                 'team2_wins' => 0
             ],
 
-            // 👥 Squads (ONLY NAMES STRING)
+            // 👥 Squads
             'squads' => [
                 'team1' => [
                     'name' => $team1['name'] ?? '',
@@ -416,21 +459,9 @@ public function matchInfo($id, CricketApiService $service)
     }
 
 
-
-
 public function players($id, CricketApiService $service)
 {
-    $response = $service->getMatchSquad($id);
-
-    if (!isset($response['data'])) {
-        return response()->json([
-            'status' => false,
-            'message' => 'Squad not available'
-        ]);
-    }
-
-    // ✅ Step 1: Get match
-    $match = CricketMatch::where('api_match_id', $id)->first();
+    $match = CricketMatch::find($id);
 
     if (!$match) {
         return response()->json([
@@ -439,113 +470,294 @@ public function players($id, CricketApiService $service)
         ]);
     }
 
-    $teams = $response['data'];
+    // 🔥 IMPORTANT: ALWAYS REFRESH (avoid stale wrong data)
+    Player::where('cricket_match_id', $id)->delete();
 
-    $team1 = $teams[0] ?? [];
-    $team2 = $teams[1] ?? [];
+    try {
+        $response = $service->getMatchSquad($match->api_match_id);
+    } catch (\Throwable $e) {
+        return response()->json([
+            'status' => false,
+            'message' => 'API error'
+        ]);
+    }
 
-    // ✅ Helper function to save players PROPERLY
-    $formatPlayers = function ($players, $teamShort) use ($match) {
+    if (!isset($response['data'])) {
+        return response()->json([
+            'status' => false,
+            'message' => 'No data'
+        ]);
+    }
 
-        return collect($players)->map(function ($p) use ($match, $teamShort) {
+    $data = $response['data'];
+    $playersToInsert = [];
+    $lineupAvailable = !empty($data['lineup']);
 
-            // 🔥 FIX: UNIQUE BY api_player_id + match_id
-            $player = Player::updateOrCreate(
-                [
-                    'api_player_id' => $p['id'],
-                    'cricket_match_id' => $match->id
-                ],
-                [
-                    'name' => $p['name'] ?? '',
-                    'role' => $this->mapRole($p['role'] ?? ''),
-                    'team_name' => $teamShort ?? '',
-                    'image' => $p['playerImg'] ?? 'https://h.cricapi.com/img/icon512.png',
-                    'credit' => 8
-                ]
-            );
+    // =========================================
+    // 🟢 CASE 1: LINEUP
+    // =========================================
+    if ($lineupAvailable) {
 
-            return [
-                'id' => $p['id'], // UUID
-                'player_id' => $player->id, // ✅ USE THIS IN FRONTEND
-                'name' => $player->name,
-                'role' => $player->role,
-                'image' => $player->image,
-                'credit' => $player->credit,
-                'points' => $player->points ?? 0,
-            ];
-        })->values();
-    };
+        foreach ($data['lineup'] as $player) {
+
+            $teamId = $player['lineup']['team_id'] ?? null;
+
+            // ✅ SAFE TEAM MAPPING
+            if ($teamId == $data['localteam_id']) {
+                $teamCode = $match->team1_code;
+            } elseif ($teamId == $data['visitorteam_id']) {
+                $teamCode = $match->team2_code;
+            } else {
+                // fallback (rare case)
+                $teamCode = $match->team1_code;
+            }
+
+            $playersToInsert[] = $this->preparePlayer($player, $teamCode, $id, true);
+        }
+
+    } else {
+
+        // =========================================
+        // 🔴 CASE 2: SQUAD
+        // =========================================
+        try {
+            $team1 = $service->getTeamSquad($data['localteam_id'], $data['season_id']);
+            $team2 = $service->getTeamSquad($data['visitorteam_id'], $data['season_id']);
+
+            $team1Squad = $team1['data']['squad'] ?? [];
+            $team2Squad = $team2['data']['squad'] ?? [];
+
+            // ✅ ASSIGN TEAM MANUALLY (IMPORTANT)
+            foreach ($team1Squad as $player) {
+                $playersToInsert[] = $this->preparePlayer($player, $match->team1_code, $id, false);
+            }
+
+            foreach ($team2Squad as $player) {
+                $playersToInsert[] = $this->preparePlayer($player, $match->team2_code, $id, false);
+            }
+
+        } catch (\Throwable $e) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Squad error'
+            ]);
+        }
+    }
+
+    Player::insert($playersToInsert);
+
+    $players = Player::where('cricket_match_id', $id)->get();
+
+    $final = $this->formatPlayersFromDB($players)->getData(true);
+    $final['lineup_available'] = $lineupAvailable;
+
+    return response()->json($final);
+}
+
+private function preparePlayer($player, $teamCode, $matchId, $isLineup)
+{
+    $roleName = strtolower($player['position']['name'] ?? '');
+
+    if (str_contains($roleName, 'wicket')) $role = 'wk';
+    elseif (str_contains($roleName, 'allround')) $role = 'ar';
+    elseif (str_contains($roleName, 'bowl')) $role = 'bowl';
+    else $role = 'bat';
+
+    return [
+        'cricket_match_id' => $matchId,
+        'api_player_id' => $player['id'],
+        'name' => $player['fullname'] ?? '',
+        'team_code' => $teamCode,
+        'role' => $role,
+        'credit' => 8,
+        'points' => 0,
+        'selection_percentage' => 0,
+        'image' => $player['image_path'] ?? null,
+
+        'is_playing' => $isLineup
+            ? !($player['lineup']['substitution'] ?? false)
+            : 0,
+
+        'is_captain' => $isLineup
+            ? ($player['lineup']['captain'] ?? 0)
+            : 0,
+
+        'is_wk' => $isLineup
+            ? ($player['lineup']['wicketkeeper'] ?? 0)
+            : 0,
+
+        'created_at' => now(),
+        'updated_at' => now(),
+    ];
+}
+
+private function formatPlayersFromDB($players): \Illuminate\Http\JsonResponse
+{
+    // ✅ Get all player IDs
+    $playerIds = $players->pluck('id')->toArray();
+
+    // ✅ Fetch total points in ONE query (avoid N+1)
+    $pointsMap = \App\Models\PlayerMatchPoint::whereIn('player_id', $playerIds)
+        ->selectRaw('player_id, SUM(points) as total_points')
+        ->groupBy('player_id')
+        ->pluck('total_points', 'player_id');
+
+    $result = ['wk' => [], 'bat' => [], 'ar' => [], 'bowl' => []];
+
+    $lineupAvailable = $players->contains('is_playing', 1);
+
+    foreach ($players as $p) {
+
+        $totalPoints = (float) ($pointsMap[$p->id] ?? 0);
+
+        $role = strtolower($p->role ?? 'bat');
+        if (!array_key_exists($role, $result)) {
+            $role = 'bat';
+        }
+
+        $result[$role][] = [
+            'id'                   => $p->api_player_id,
+            'name'                 => $p->name,
+            'team'                 => $p->team_code,
+            'image'                => $p->image,
+            'credit'               => (float) $p->credit,
+
+            // ✅ Points
+            'points'               => (float) ($p->points ?? 0),
+            'total_points'         => $totalPoints,
+
+            // ✅ Selection %
+            'selection_percentage' => (float) ($p->selection_percentage ?? 0),
+
+            'is_playing'           => (bool) $p->is_playing,
+            'is_captain'           => (bool) $p->is_captain,
+            'is_wk'                => (bool) $p->is_wk,
+            'substitution'         => (bool) $p->substitution,
+        ];
+    }
+
+    // ✅ SORT EACH ROLE BY TOTAL POINTS DESC
+    foreach ($result as $role => $playersList) {
+        $result[$role] = collect($playersList)
+            ->sortByDesc('total_points')
+            ->values()
+            ->toArray();
+    }
 
     return response()->json([
-        'status' => true,
-        'data' => [
-
-            'team1' => [
-                'name' => $team1['teamName'] ?? '',
-                'short' => $team1['shortname'] ?? '',
-                'players' => $formatPlayers($team1['players'] ?? [], $team1['shortname'] ?? '')
-            ],
-
-            'team2' => [
-                'name' => $team2['teamName'] ?? '',
-                'short' => $team2['shortname'] ?? '',
-                'players' => $formatPlayers($team2['players'] ?? [], $team2['shortname'] ?? '')
-            ]
-
-        ]
+        'status'           => true,
+        'lineup_available' => $lineupAvailable,
+        'source'           => 'database',
+        'data'             => $result,
     ]);
 }
 
-    public function homeContests()
-{
 
+public function refreshPlayers($id, CricketApiService $service)
+{
+    // Delete old players for this match
+    Player::where('cricket_match_id', $id)->delete();
+    
+    // Re-fetch fresh from API
+    return $this->players($id, $service);
+}
+
+// ================================================
+// CREDIT SYSTEM — role based
+// ================================================
+private function resolveRole(string $positionName, bool $isWK = false): string
+{
+    if ($isWK || str_contains($positionName, 'wicketkeeper')) return 'wk';
+    if (str_contains($positionName, 'allrounder'))            return 'ar';
+    if (str_contains($positionName, 'bowler'))                return 'bowl';
+    return 'bat';
+}
+
+private function getPlayerCredit(string $role): float
+{
+    return match($role) {
+        'wk'   => 9.0,
+        'ar'   => 8.5,
+        'bowl' => 8.0,
+        'bat'  => 8.0,
+        default => 7.5,
+    };
+}
+
+   public function homeContests()
+{
     $contests = \App\Models\Contest::with('match')
-        ->where('status','upcoming')
+        ->where('status', 'upcoming')
+        ->whereHas('match', function ($query) {
+            $query->where('status', 'upcoming');
+        })
         ->limit(5)
         ->get()
         ->map(function ($contest) {
 
             $match = $contest->match;
 
+            if (!$match) return null;
+
+            // 🟢 SAFE TIME
+            $matchTime = $match->match_start_time
+                ? \Carbon\Carbon::parse($match->match_start_time)->setTimezone('Asia/Kolkata')
+                : null;
+
             return [
 
-                'contest_id' => $contest->id,
-
+                // 🎯 CONTEST
+                'contest_id'   => $contest->id,
                 'contest_name' => $contest->name,
+                'entry_fee'    => (float) $contest->entry_fee,
+                'prize_pool'   => (float) $contest->prize_pool,
 
-                'entry_fee' => $contest->entry_fee,
-
-                'prize' => $contest->prize_pool,
-
+                // 🏏 MATCH
                 'match' => [
+                    'match_id'   => $match->id,
 
-                    'match_id' => $match->api_match_id,
+                    // 🔥 SHORT NAMES (IMPORTANT)
+                    'team1'      => $match->team1_code ?? strtoupper(substr($match->team_1, 0, 3)),
+                    'team2'      => $match->team2_code ?? strtoupper(substr($match->team_2, 0, 3)),
 
-                    'series' => $match->series_name,
+                    // 🔥 FULL NAMES (OPTIONAL FOR UI)
+                    'team1_full' => $match->team_1,
+                    'team2_full' => $match->team_2,
 
-                    'team1' => $match->team_1,
+                    // 🖼️ LOGOS
+                    'team1_logo' => $match->team1_logo 
+                        ?? 'https://h.cricapi.com/img/icon512.png',
 
-                    'team2' => $match->team_2,
+                    'team2_logo' => $match->team2_logo 
+                        ?? 'https://h.cricapi.com/img/icon512.png',
 
-                    'match_time' => $match->match_start_time,
+                    // 📅 SERIES
+                    'series_name' => $match->series_name ?? '',
 
-                    'time' => $match->match_start_time->format('h:i A')
+                    // 🕒 TIME
+                    'match_time' => $matchTime?->format('h:i A'),
+                    'match_date' => $matchTime?->format('d M'),
 
+                    // ⏳ COUNTDOWN (BONUS 🔥)
+                    'status_text' => $matchTime
+                        ? 'Starts in ' . now()->diffForHumans($matchTime, true)
+                        : '',
                 ]
-
             ];
-        });
+        })
+        ->filter()
+        ->values();
 
     return response()->json([
         'status' => true,
-        'data' => $contests
+        'data'   => $contests
     ]);
 }
 
 
 public function playersList($match_id)
 {
-    // Step 1: Find match using API match ID
+    // ✅ Find match
     $match = CricketMatch::where('api_match_id', $match_id)->first();
 
     if (!$match) {
@@ -555,10 +767,15 @@ public function playersList($match_id)
         ]);
     }
 
-    // Step 2: Get players (for now all)
-   $players = Player::where('cricket_match_id', $match->id)->get();
+    // ✅ GET PLAYERS BY TEAM (FIXED)
+    $players = Player::whereIn('team_name', [
+        $match->team1_code,
+        $match->team2_code
+    ])->get();
 
-    // Step 3: Prepare role-wise data
+    // =========================
+    // ✅ ROLE GROUPING
+    // =========================
     $data = [
         'wk' => [],
         'bat' => [],
@@ -571,47 +788,30 @@ public function playersList($match_id)
         $playerData = [
             'id' => $player->id,
             'name' => $player->name,
-
-            // Role (WK / BAT / ALL / BOWL)
             'role' => $player->role,
-
-            // Image
             'image' => $player->image ?? 'https://h.cricapi.com/img/icon512.png',
-
-            // Team short name
             'team' => $player->team_name ?? '',
-
-            // Credits (for UI)
-            'credit' => $player->credit ?? rand(7,10),
-
-            // Points (temporary random)
-            'points' => $player->points ?? rand(0,100),
-
-            // Selection %
-            'selection_percentage' => rand(1,100),
+            'credit' => $player->credit ?? 8,
+            'points' => $player->points ?? 0,
+            'selection_percentage' => rand(10,80),
         ];
 
-        // Step 4: Group by role
         switch ($player->role) {
             case 'WK':
                 $data['wk'][] = $playerData;
                 break;
-
             case 'BAT':
                 $data['bat'][] = $playerData;
                 break;
-
             case 'ALL':
                 $data['all'][] = $playerData;
                 break;
-
             case 'BOWL':
                 $data['bowl'][] = $playerData;
                 break;
         }
     }
 
-    // Step 5: Return response
     return response()->json([
         'status' => true,
         'data' => $data
@@ -792,276 +992,408 @@ public function matchDetails($id, CricketApiService $service)
     ]);
 }
 
-public function live(CricketApiService $service, $id)
+
+public function live($id, CricketApiService $service)
 {
-    $info = $service->getMatchInfo($id);
-    $bbb  = $service->getBallByBall($id);
+    $matchModel = CricketMatch::find($id);
 
-    $match = $info['data'] ?? [];
+    if (!$matchModel) {
+        return response()->json([
+            'status'  => false,
+            'message' => 'Match not found'
+        ]);
+    }
+
+    $apiId    = $matchModel->api_match_id;
+    $info     = $service->getMatchInfo($apiId);
+    $liveData = $service->getBallByBall($apiId);
+
+    if (!isset($info['data'])) {
+        return response()->json([
+            'status'  => false,
+            'message' => 'Live data not available'
+        ]);
+    }
+
+    $match = $info['data'];
 
     // =========================
-    // ✅ TEAMS
+    // TEAMS
     // =========================
-    $team1 = $match['localteam'] ?? [];
+    $team1 = $match['localteam']   ?? [];
     $team2 = $match['visitorteam'] ?? [];
 
     // =========================
-    // ✅ SCORE
+    // SCORE
     // =========================
-    $runs = $match['runs'] ?? [];
+    $runs       = $match['runs'] ?? [];
+    $team1Score = collect($runs)->firstWhere('team_id', $team1['id'] ?? null) ?? [];
+    $team2Score = collect($runs)->firstWhere('team_id', $team2['id'] ?? null) ?? [];
 
-    $team1Score = [];
-    $team2Score = [];
+    $t1_runs    = (int)   ($team1Score['score']   ?? 0);
+    $t1_wickets = (int)   ($team1Score['wickets'] ?? 0);
+    $t1_overs   = (float) ($team1Score['overs']   ?? $team1Score['overs_float'] ?? 0);
 
-    if (is_array($runs)) {
-        foreach ($runs as $run) {
+    $t2_runs    = (int)   ($team2Score['score']   ?? 0);
+    $t2_wickets = (int)   ($team2Score['wickets'] ?? 0);
+    $t2_overs   = (float) ($team2Score['overs']   ?? $team2Score['overs_float'] ?? 0);
 
-            if (($run['team_id'] ?? null) == ($match['localteam_id'] ?? null)) {
-                $team1Score = $run;
-            }
+    $totalOvers = (float) ($match['total_overs'] ?? 20); // T20 = 20
 
-            if (($run['team_id'] ?? null) == ($match['visitorteam_id'] ?? null)) {
-                $team2Score = $run;
-            }
+    // =========================
+    // ✅ CRR — Current Run Rate
+    // CRR = runs scored / overs bowled
+    // =========================
+    $crr = null;
+
+    // Figure out which innings is live
+    $matchStatus   = $match['status'] ?? '';
+    $secondInnings = $t2_overs > 0; // PBKS batting = second innings live
+
+    if ($secondInnings && $t2_overs > 0) {
+        $crr = round($t2_runs / $t2_overs, 2);
+    } elseif (!$secondInnings && $t1_overs > 0) {
+        $crr = round($t1_runs / $t1_overs, 2);
+    }
+
+    // =========================
+    // ✅ RRR — Required Run Rate
+    // RRR = runs needed / overs remaining
+    // Only in 2nd innings
+    // =========================
+    $rrr            = null;
+    $runsNeeded     = null;
+    $ballsRemaining = null;
+    $oversRemaining = null;
+
+    if ($secondInnings && $t1_runs > 0) {
+        $target         = $t1_runs + 1;
+        $runsNeeded     = $target - $t2_runs;
+        $ballsRemaining = (int) (($totalOvers * 6) - ($t2_overs * 6));
+        $oversRemaining = round($ballsRemaining / 6, 1);
+
+        if ($ballsRemaining > 0 && $runsNeeded > 0) {
+            $rrr = round(($runsNeeded / $ballsRemaining) * 6, 2);
+        } elseif ($runsNeeded <= 0) {
+            $rrr = 0; // already won
         }
     }
 
+    // =========================
+    // SCORE OBJECT
+    // =========================
     $score = [
         'team1' => [
-            'name' => $team1['code'] ?? '',
-            'runs' => $team1Score['score'] ?? 0,
-            'wickets' => $team1Score['wickets'] ?? 0,
-            'overs' => $team1Score['overs'] ?? '0'
+            'name'    => $team1['code'] ?? '',
+            'runs'    => $t1_runs,
+            'wickets' => $t1_wickets,
+            'overs'   => $t1_overs,
         ],
         'team2' => [
-            'name' => $team2['code'] ?? '',
-            'runs' => $team2Score['score'] ?? 0,
-            'wickets' => $team2Score['wickets'] ?? 0,
-            'overs' => $team2Score['overs'] ?? '0'
-        ]
+            'name'    => $team2['code'] ?? '',
+            'runs'    => $t2_runs,
+            'wickets' => $t2_wickets,
+            'overs'   => $t2_overs,
+        ],
     ];
 
     // =========================
-    // ✅ BALL DATA
+    // RESULT / LIVE MESSAGE
     // =========================
-    $balls = [];
+    $result = null;
 
-    if (isset($bbb['data']['balls'])) {
-        $balls = $bbb['data']['balls'];
-    }
+    if ($matchStatus === 'Finished') {
+        // Use Sportmonks note if available
+        $result = $match['note'] ?? null;
 
-    $currentBatsmen = [];
-    $currentBowler = null;
-    $lastOver = [];
-
-    if (!empty($balls)) {
-
-        $lastBall = end($balls);
-
-        $currentBowler = $lastBall['bowler']['fullname'] ?? null;
-
-        $currentOver = $lastBall['over'] ?? 0;
-
-        $overBalls = array_filter($balls, fn($b) => ($b['over'] ?? null) == $currentOver);
-
-        foreach ($overBalls as $b) {
-            $lastOver[] = $b['score'] ?? '.';
-        }
-
-        $bats = [];
-
-        foreach (array_reverse($balls) as $b) {
-            $name = $b['batsman']['fullname'] ?? null;
-
-            if ($name && !in_array($name, $bats)) {
-                $bats[] = $name;
+        // Fallback: build manually
+        if (!$result) {
+            if ($t1_runs > $t2_runs) {
+                $result = ($team1['code'] ?? 'Team 1') . ' won by ' . ($t1_runs - $t2_runs) . ' runs';
+            } elseif ($t2_runs > $t1_runs) {
+                $wicketsLeft = 10 - $t2_wickets;
+                $result      = ($team2['code'] ?? 'Team 2') . ' won by ' . $wicketsLeft . ' wickets';
+            } else {
+                $result = 'Match tied';
             }
-
-            if (count($bats) == 2) break;
         }
-
-        foreach ($bats as $b) {
-            $currentBatsmen[] = ['name' => $b];
+    } else {
+        // Live message
+        if ($runsNeeded !== null && $ballsRemaining !== null && $runsNeeded > 0) {
+            $result = ($team2['code'] ?? 'Team 2')
+                . ' needs ' . $runsNeeded
+                . ' runs in ' . $ballsRemaining . ' balls';
         }
     }
 
     // =========================
-    // ✅ 🔥 SQUAD FIX (IMPORTANT)
+    // LIVE DATA
     // =========================
-    $team1Squad = [];
-    $team2Squad = [];
-
-    $lineup = $match['lineup'] ?? [];
-
-    if (is_array($lineup)) {
-        foreach ($lineup as $player) {
-
-            $playerName = $player['fullname'] ?? '';
-
-            if (($player['lineup']['team_id'] ?? null) == ($match['localteam_id'] ?? null)) {
-                $team1Squad[] = $playerName;
-            }
-
-            if (($player['lineup']['team_id'] ?? null) == ($match['visitorteam_id'] ?? null)) {
-                $team2Squad[] = $playerName;
-            }
-        }
-    }
+    $currentBatsmen = $liveData['current_batsmen'] ?? [];
+    $currentBowler  = $liveData['current_bowler']  ?? null;
+    $lastOver       = $liveData['recent_balls']    ?? [];
 
     // =========================
-    // ✅ FINAL RESPONSE
+    // SQUAD
+    // =========================
+    $team1Squad = Player::where('cricket_match_id', $matchModel->id)
+        ->where('team_name', $matchModel->team1_code)
+        ->pluck('name');
+
+    $team2Squad = Player::where('cricket_match_id', $matchModel->id)
+        ->where('team_name', $matchModel->team2_code)
+        ->pluck('name');
+
+    // =========================
+    // FINAL RESPONSE
     // =========================
     return response()->json([
         'status' => true,
-        'data' => [
+        'data'   => [
+            'match_name'   => ($team1['code'] ?? '') . ' vs ' . ($team2['code'] ?? ''),
+            'match_status' => $matchStatus,
+            'score'        => $score,
+            'result'       => $result,
 
-            'match_name' => ($team1['name'] ?? '') . ' vs ' . ($team2['name'] ?? ''),
-            'match_status' => $match['status'] ?? '',
-            'venue' => '',
+            // ✅ NEW FIELDS
+            'crr'             => $crr,               // 8.25
+            'rrr'             => $rrr,               // 11.40
+            'target'          => $secondInnings ? ($t1_runs + 1) : null,
+            'runs_needed'     => $runsNeeded,         // 45
+            'balls_remaining' => $ballsRemaining,     // 24
+            'overs_remaining' => $oversRemaining,     // 4.0
+            'current_innings' => $secondInnings ? 2 : 1,
 
-            'teams' => [
-                'team1' => $team1,
-                'team2' => $team2
-            ],
-
-            'score' => $score,
-
-            'last_over' => $lastOver,
-
-            'batsmen' => $currentBatsmen,
-
-            'bowler' => $currentBowler,
-
-            'toss' => null,
-
-            // ✅ NOW WILL WORK
-            'team1_squad' => $team1Squad,
-            'team2_squad' => $team2Squad
+            'last_over'    => $lastOver,
+            'batsmen'      => $currentBatsmen,
+            'bowler'       => $currentBowler,
+            'team1_squad'  => $team1Squad,
+            'team2_squad'  => $team2Squad,
         ]
     ]);
 }
-
 public function scorecard($id, CricketApiService $service)
 {
-    // ✅ Use getMatchInfo with batting/bowling included
-    $response = $service->getScorecardData($id);
+    $match = CricketMatch::find($id);
+
+    if (!$match) {
+        return response()->json([
+            'status'  => false,
+            'message' => 'Match not found'
+        ]);
+    }
+
+    $response = $service->getScorecardData($match->api_match_id);
 
     if (!isset($response['data'])) {
         return response()->json([
-            'status' => false,
+            'status'  => false,
             'message' => 'Scorecard not available'
         ]);
     }
 
     $data = $response['data'];
 
+    $status = $data['status'] ?? '';
+    $result = $data['note']   ?? 'Match yet to start';
+
+    // ================================================
+    // TEAM CODES
+    // ================================================
+    $localteamId     = $data['localteam_id'] ?? null;
+    $visitorteamId   = $data['visitorteam_id'] ?? null;
+    $localteamCode   = $data['localteam']['code'] ?? $match->team1_code ?? '';
+    $visitorteamCode = $data['visitorteam']['code'] ?? $match->team2_code ?? '';
+
+    // ================================================
+    // INNINGS
+    // ================================================
     $innings = [];
+    foreach ($data['runs'] ?? [] as $s) {
+        $teamId = $s['team_id'] ?? null;
+
+        if ($teamId == $localteamId) {
+            $teamCode = $localteamCode;
+        } elseif ($teamId == $visitorteamId) {
+            $teamCode = $visitorteamCode;
+        } else {
+            $teamCode = $s['team']['code'] ?? $s['team']['name'] ?? '';
+        }
+
+        $innings[] = [
+            'team'    => $teamCode,
+            'runs'    => $s['score'] ?? 0,
+            'wickets' => $s['wickets'] ?? 0,
+            'overs'   => $s['overs'] ?? '0.0',
+        ];
+    }
+
+    // ================================================
+    // GROUPING
+    // ================================================
+    $battingByInning = [];
+    foreach ($data['batting'] ?? [] as $b) {
+        $battingByInning[$b['scoreboard'] ?? 'S1'][] = $b;
+    }
+
+    $bowlingByInning = [];
+    foreach ($data['bowling'] ?? [] as $b) {
+        $bowlingByInning[$b['scoreboard'] ?? 'S1'][] = $b;
+    }
+
+    // ================================================
+    // FALL OF WICKETS
+    // ================================================
+    $fowByInning = [];
+    foreach ($data['batting'] ?? [] as $b) {
+        if (!empty($b['fow_score'])) {
+            $key = $b['scoreboard'] ?? 'S1';
+            $fowByInning[$key][] = [
+                'player' => $b['batsman']['fullname'] ?? 'Unknown',
+                'score'  => $b['fow_score'],
+                'over'   => (float) ($b['fow_balls'] ?? 0),
+            ];
+        }
+    }
+
+    $inningKeys = array_unique(array_merge(
+        array_keys($battingByInning),
+        array_keys($bowlingByInning)
+    ));
+    sort($inningKeys);
+
     $batting = [];
     $bowling = [];
     $extras = [];
     $fallOfWickets = [];
 
-    // ✅ INNINGS from 'runs' (Sportmonks structure)
-    foreach ($data['runs'] ?? [] as $s) {
-        $innings[] = [
-            'team'    => $s['team']['name'] ?? ($s['team_id'] ?? ''),
-            'runs'    => $s['score'] ?? 0,
-            'wickets' => $s['wickets'] ?? 0,
-            'overs'   => $s['overs'] ?? '0.0'
-        ];
-    }
-
-    // ✅ GROUP batting by innings number
-    $battingByInning = [];
-    foreach ($data['batting'] ?? [] as $b) {
-        $inningNum = $b['scoreboard'] ?? 1; // S1, S2 etc
-        $battingByInning[$inningNum][] = $b;
-    }
-
-    // ✅ GROUP bowling by innings number
-    $bowlingByInning = [];
-    foreach ($data['bowling'] ?? [] as $b) {
-        $inningNum = $b['scoreboard'] ?? 1;
-        $bowlingByInning[$inningNum][] = $b;
-    }
-
-    $inningKeys = array_unique(
-        array_merge(
-            array_keys($battingByInning),
-            array_keys($bowlingByInning)
-        )
-    );
-    sort($inningKeys);
-
     foreach ($inningKeys as $inningKey) {
 
-        $battingList  = [];
-        $bowlingList  = [];
-        $fow          = [];
-        $teamRuns     = 0;
-        $wicketCount  = 0;
+        $battingList = [];
+        $bowlingList = [];
+        $fow = $fowByInning[$inningKey] ?? [];
+        $outPlayers = array_column($fow, 'player');
 
-        // ✅ BATTING
-       foreach ($battingByInning[$inningKey] ?? [] as $b) {
+        // ================================================
+        // BATTING (FIXED DISMISSAL)
+        // ================================================
+        foreach ($battingByInning[$inningKey] ?? [] as $b) {
 
-    $playerName = $b['batsman']['fullname']
-        ?? ($b['batsman']['firstname'] ?? '');
+            $playerName = $b['batsman']['fullname']
+                ?? $b['batsman']['name']
+                ?? 'Unknown';
 
-    if ($b['active'] == true) {
-        $dismissal = 'batting';
-    } elseif (empty($b['wicket_id'])) {
-        $dismissal = 'not out';
-    } else {
-        $dismissal = 'out';
-    }
+            $dismissal = 'not out';
+            $isOut     = in_array($playerName, $outPlayers);
 
-    $battingList[] = [
-        'name'        => $playerName,
-        'dismissal'   => $dismissal,
-        'runs'        => $b['score'] ?? 0,
-        'balls'       => $b['ball'] ?? 0,
-        'fours'       => $b['four_x'] ?? 0,
-        'sixes'       => $b['six_x'] ?? 0,
-        'strike_rate' => $b['rate'] ?? ''
-    ];
+            // 🔥 PRIORITY 1: DIRECT TEXT FROM API
+            if (!empty($b['dismissal_text'])) {
+                $dismissal = $b['dismissal_text'];
+            }
 
-    // ✅ FIXED FOW
-    if (!empty($b['fow_score'])) {
-        $fow[] = [
-            'player' => $playerName,
-            'score'  => $b['fow_score'],
-            'over'   => $b['fow_balls'] ?? ''
-        ];
-    }
-}
+            // 🔥 PRIORITY 2: DESCRIPTION FIELD
+            elseif (!empty($b['wicket']['description'])) {
+                $dismissal = $b['wicket']['description'];
+            }
 
-        // ✅ BOWLING
-        foreach ($bowlingByInning[$inningKey] ?? [] as $b) {
-            $bowlingList[] = [
-                'name'    => $b['player']['fullname'] ?? ($b['player']['name'] ?? ''),
-                'overs'   => $b['overs'] ?? '',
-                'maidens' => $b['medians'] ?? 0,   // Sportmonks uses 'medians'
-                'runs'    => $b['runs'] ?? 0,
-                'wickets' => $b['wickets'] ?? 0,
-                'economy' => $b['rate'] ?? ''
+            // 🔥 PRIORITY 3: BUILD MANUALLY
+            elseif (!empty($b['wicket'])) {
+                $w       = $b['wicket'];
+                $type    = strtolower($w['type'] ?? $w['kind'] ?? '');
+                $bowler  = $w['bowler']['fullname'] ?? $w['bowler']['name'] ?? '';
+                $fielder = $w['fielder']['fullname'] ?? $w['catcher']['fullname'] ?? $w['fielder']['name'] ?? '';
+
+                if ($type === 'bowled')          $dismissal = "b {$bowler}";
+                elseif ($type === 'caught')      $dismissal = "c {$fielder} b {$bowler}";
+                elseif ($type === 'run out')     $dismissal = "run out ({$fielder})";
+                elseif ($type === 'lbw')         $dismissal = "lbw b {$bowler}";
+                elseif ($type === 'stumped')     $dismissal = "st {$fielder} b {$bowler}";
+                else                             $dismissal = ucfirst($type);
+            }
+
+            // 🔥 LAST FALLBACK
+            elseif ($isOut) {
+                $dismissal = 'out';
+            }
+
+            // Active batsman
+            if (($b['active'] ?? false) === true) {
+                $dismissal = 'not out';
+            }
+
+            $battingList[] = [
+                'name'        => $playerName,
+                'dismissal'   => $dismissal,
+                'runs'        => $b['score'] ?? 0,
+                'balls'       => $b['ball'] ?? 0,
+                'fours'       => $b['four_x'] ?? 0,
+                'sixes'       => $b['six_x'] ?? 0,
+                'strike_rate' => $b['rate'] ?? '',
             ];
         }
 
-        $batting[]        = $battingList;
-        $bowling[]        = $bowlingList;
-        $fallOfWickets[]  = $fow;
-        $extras[]         = ['runs' => 0, 'byes' => 0]; // Sportmonks doesn't expose extras easily
+        // ================================================
+        // BOWLING
+        // ================================================
+        foreach ($bowlingByInning[$inningKey] ?? [] as $b) {
+
+            $bowlerName = $b['player']['fullname']
+                ?? $b['player']['name']
+                ?? null;
+
+            if (!$bowlerName && isset($b['player_id'])) {
+                $player = Player::where('api_player_id', $b['player_id'])->first();
+                $bowlerName = $player->name ?? 'Unknown';
+            }
+
+            $bowlingList[] = [
+                'name'    => $bowlerName ?? 'Unknown',
+                'overs'   => $b['overs'] ?? '',
+                'maidens' => $b['medians'] ?? 0,
+                'runs'    => $b['runs'] ?? 0,
+                'wickets' => $b['wickets'] ?? 0,
+                'economy' => $b['rate'] ?? '',
+            ];
+        }
+
+        // ================================================
+        // FALL OF WICKETS
+        // ================================================
+        usort($fow, fn($a, $b) => $a['over'] <=> $b['over']);
+
+        $fowList = [];
+        $i = 1;
+        foreach ($fow as $f) {
+            $fowList[] = [
+                'player' => $f['player'],
+                'score'  => $f['score'] . '-' . $i,
+                'over'   => (string) $f['over'],
+            ];
+            $i++;
+        }
+
+        $batting[]       = $battingList;
+        $bowling[]       = $bowlingList;
+        $fallOfWickets[] = $fowList;
+        $extras[]        = ['runs' => 0];
     }
 
-    // ✅ SAME response structure — app needs zero changes
     return response()->json([
         'status' => true,
-        'data' => [
-            'innings'          => $innings,
-            'batting'          => $batting,
-            'bowling'          => $bowling,
-            'extras'           => $extras,
-            'fall_of_wickets'  => $fallOfWickets
+        'data'   => [
+            'match_result' => [
+                'status' => $status,
+                'result' => $result,
+            ],
+            'teams' => [
+                'team1' => $localteamCode,
+                'team2' => $visitorteamCode,
+            ],
+            'innings'         => $innings,
+            'batting'         => $batting,
+            'bowling'         => $bowling,
+            'extras'          => $extras,
+            'fall_of_wickets' => $fallOfWickets,
         ]
     ]);
 }
@@ -1080,94 +1412,142 @@ public function debugScorecard($id, CricketApiService $service)
     ]);
 }
 
-public function squads($id, CricketApiService $service)
-{
-    $response = $service->getMatchSquad($id);
 
-    if (!isset($response['data'])) {
+public function squads($id)
+{
+    $match = CricketMatch::find($id);
+
+    if (!$match) {
         return response()->json([
-            'status' => false,
-            'message' => 'Squads not available'
+            'status'  => false,
+            'message' => 'Match not found'
         ]);
     }
 
-    $data = $response['data'];
+    $apiKey   = config('services.sportmonks.key');
+    $baseUrl  = config('services.sportmonks.base_url');
 
-    $team1 = $data['localteam'] ?? [];
-    $team2 = $data['visitorteam'] ?? [];
-    $lineup = $data['lineup'] ?? [];
+    // ================================================
+    // FETCH FIXTURE
+    // ================================================
+    $response = Http::get("{$baseUrl}/fixtures/{$match->api_match_id}", [
+        'api_token' => $apiKey,
+        'include'   => 'lineup,localteam,visitorteam',
+    ]);
 
-    $team1Players = [];
-    $team2Players = [];
-
-    if (is_array($lineup)) {
-        foreach ($lineup as $player) {
-
-            // 🔍 DEBUG (use once)
-            // dd($player);
-
-            // =========================
-            // ✅ ROLE MAPPING (STRONG)
-            // =========================
-            $position = strtolower(
-                $player['lineup']['position'] ??
-                $player['position']['name'] ??
-                $player['type'] ??
-                ''
-            );
-
-            $role = 'BAT'; // default
-
-            if (str_contains($position, 'keeper') || str_contains($position, 'wk')) {
-                $role = 'WK';
-            } elseif (str_contains($position, 'allround') || str_contains($position, 'all-round')) {
-                $role = 'AR';
-            } elseif (str_contains($position, 'bowler')) {
-                $role = 'BOWL';
-            } elseif (str_contains($position, 'bat')) {
-                $role = 'BAT';
-            }
-
-            // =========================
-            // ✅ PLAYER FORMAT
-            // =========================
-            $formattedPlayer = [
-                'id' => $player['id'] ?? null,
-                'name' => $player['fullname'] ?? '',
-                'role' => $role,
-                'image' => $player['image_path'] ?? null,
-                'country' => $player['country_id'] ?? null
-            ];
-
-            // =========================
-            // ✅ TEAM ASSIGNMENT
-            // =========================
-            if (($player['lineup']['team_id'] ?? null) == ($team1['id'] ?? null)) {
-                $team1Players[] = $formattedPlayer;
-            }
-
-            if (($player['lineup']['team_id'] ?? null) == ($team2['id'] ?? null)) {
-                $team2Players[] = $formattedPlayer;
-            }
-        }
+    if (!$response->successful()) {
+        return response()->json(['status' => false, 'message' => 'API failed']);
     }
 
+    $data     = $response->json()['data'] ?? [];
+    $lineup   = $data['lineup']           ?? [];
+    $team1Id  = $data['localteam']['id']  ?? null;
+    $team2Id  = $data['visitorteam']['id'] ?? null;
+    $seasonId = $data['season_id']         ?? null;
+
+    // ================================================
+    // FORMAT HELPER
+    // ================================================
+    $format = function ($players) {
+        return collect($players)->map(function ($p) {
+
+            $positionName = strtolower($p['position']['name'] ?? '');
+            $isWK         = $p['lineup']['wicketkeeper'] ?? false;
+
+            if ($isWK || str_contains($positionName, 'wicketkeeper')) $role = 'WK';
+            elseif (str_contains($positionName, 'allrounder'))         $role = 'AR';
+            elseif (str_contains($positionName, 'bowler'))             $role = 'BOWL';
+            else                                                        $role = 'BAT';
+
+            return [
+                'id'         => $p['id'],
+                'name'       => $p['fullname'] ?? $p['name'] ?? 'Unknown',
+                'role'       => $role,
+                'credit'     => 8,
+                'points'     => 0,
+                'image'      => $p['image_path'] ?? 'https://cdn.sportmonks.com/images/cricket/placeholder.png',
+                'is_captain' => $p['lineup']['captain']      ?? false,
+                'is_wk'      => $p['lineup']['wicketkeeper'] ?? false,
+            ];
+        })->values();
+    };
+
+    // ================================================
+    // CASE 1: LINEUP AVAILABLE → show playing 11 only
+    // ================================================
+    if (!empty($lineup)) {
+
+        $players = collect($lineup);
+
+        // Only playing 11 — no substitutes
+        $team1Players = $players->filter(
+            fn($p) => ($p['lineup']['team_id'] ?? null) == $team1Id
+                   && !($p['lineup']['substitution'] ?? false)
+        );
+
+        $team2Players = $players->filter(
+            fn($p) => ($p['lineup']['team_id'] ?? null) == $team2Id
+                   && !($p['lineup']['substitution'] ?? false)
+        );
+
+        return response()->json([
+            'status'           => true,
+            'lineup_available' => true,
+            'data' => [
+                'team1' => [
+                    'name'       => $data['localteam']['name'],
+                    'short_name' => $data['localteam']['code'],
+                    'logo'       => $data['localteam']['image_path'],
+                    'players'    => $format($team1Players),
+                ],
+                'team2' => [
+                    'name'       => $data['visitorteam']['name'],
+                    'short_name' => $data['visitorteam']['code'],
+                    'logo'       => $data['visitorteam']['image_path'],
+                    'players'    => $format($team2Players),
+                ],
+            ]
+        ]);
+    }
+
+    // ================================================
+    // CASE 2: NO LINEUP → show full season squad
+    // ================================================
+    $team1SquadRes = Http::get("{$baseUrl}/teams/{$team1Id}/squad/{$seasonId}", [
+        'api_token' => $apiKey,
+    ]);
+
+    $team2SquadRes = Http::get("{$baseUrl}/teams/{$team2Id}/squad/{$seasonId}", [
+        'api_token' => $apiKey,
+    ]);
+
+    $team1Squad = $team1SquadRes->json()['data']['squad'] ?? [];
+    $team2Squad = $team2SquadRes->json()['data']['squad'] ?? [];
+
+    // Add empty lineup key so $format() works for both cases
+    $withEmptyLineup = fn($squad) => array_map(function ($p) {
+        $p['lineup'] = ['captain' => false, 'wicketkeeper' => false, 'substitution' => false];
+        return $p;
+    }, $squad);
+
     return response()->json([
-        'status' => true,
+        'status'           => true,
+        'lineup_available' => false,
         'data' => [
             'team1' => [
-                'name' => $team1['name'] ?? '',
-                'short_name' => $team1['code'] ?? '',
-                'logo' => $team1['image_path'] ?? '',
-                'players' => array_values($team1Players)
+                'name'       => $data['localteam']['name'],
+                'short_name' => $data['localteam']['code'],
+                'logo'       => $data['localteam']['image_path'],
+                'players'    => $format($withEmptyLineup($team1Squad)),
             ],
             'team2' => [
-                'name' => $team2['name'] ?? '',
-                'short_name' => $team2['code'] ?? '',
-                'logo' => $team2['image_path'] ?? '',
-                'players' => array_values($team2Players)
-            ]
+                'name'       => $data['visitorteam']['name'],
+                'short_name' => $data['visitorteam']['code'],
+                'logo'       => $data['visitorteam']['image_path'],
+                'players'    => $format($withEmptyLineup($team2Squad)),
+            ],
         ]
     ]);
 }
+
 }

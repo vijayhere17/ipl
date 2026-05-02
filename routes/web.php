@@ -16,3 +16,7 @@ Route::post('/store-team', [FantasyController::class, 'storeTeam']);
 Route::get('/my-teams/{match_id}', [FantasyController::class, 'myTeams']);
 Route::get('/team-preview/{team_id}', [FantasyController::class, 'preview']);
 Route::get('/leaderboard/{contest_id}', [FantasyController::class, 'leaderboard']);
+
+Route::get('/match/{id}/live-view', function ($id) {
+    return view('live-match', compact('id'));
+});
